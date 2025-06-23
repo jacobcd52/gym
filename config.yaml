@@ -1,0 +1,35 @@
+# High GPU utilization configuration
+env_id: 'CartPole-v1'                    # Gymnasium environment to train on
+total_episodes: 300                     # Total number of episodes to train for
+num_envs: 8                              # Number of parallel environments for vectorized training
+num_steps: 128                           # Number of steps to run per update (affects batch size)
+seed: 42                                 # Random seed for reproducibility
+torch_deterministic: true                # Whether to use deterministic PyTorch operations
+cuda: true                               # Whether to use GPU acceleration
+max_episode_steps: 512                    # Maximum steps per episode (truncates long episodes)
+
+# agent.py
+learning_rate: 1.0e-3                 # Learning rate for the Adam optimizer
+gamma: 0.99                              # Discount factor for future rewards
+gae_lambda: 0.95                         # GAE (Generalized Advantage Estimation) lambda parameter
+minibatch_size: 256                     # Manual minibatch size (large for GPU utilization)
+update_epochs: 4                         # Number of epochs to update the policy per batch
+clip_coef: 0.2                           # PPO clipping coefficient (epsilon). Default 0.2
+ent_coef: 0.01                           # Entropy coefficient for exploration bonus
+vf_coef: 0.5                             # Value function loss coefficient
+max_grad_norm: 0.5                       # Maximum gradient norm for gradient clipping
+target_kl: null                          # Target KL divergence (null = no early stopping)
+optimizer_eps: 1.0e-5                    # Epsilon parameter for Adam optimizer
+hidden_size: 2048                        # Size of hidden layers in the neural network (very large)
+hidden_sizes: [128, 64, 32, 32]                   # List of hidden layer sizes for MLP (will override hidden_size if specified)
+layer_init_std: 1.4142135623730951       # Standard deviation for layer weight initialization (sqrt(2))
+actor_std: 0.01                          # Standard deviation for actor head initialization
+critic_std: 1                            # Standard deviation for critic head initialization
+
+# logging
+wandb_project_name: "ppo-gym"            # Weights & Biases project name for logging
+wandb_entity: null                       # Weights & Biases entity/username (null = default)
+
+# video saving
+save_video_freq: 50                     # Save video every N episodes
+video_length: 200                        # Maximum number of frames to record per video 

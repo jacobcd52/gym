@@ -1,0 +1,13 @@
+gymnasium[atari]
+ale-py
+torch
+wandb
+pyyaml
+moviepy
+supersuit
+pygame
+imageio
+tqdm
+tensorboard
+gym_miniworld
+numpy<2
