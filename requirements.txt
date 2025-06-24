@@ -1,4 +1,6 @@
+gymnasium==0.29.1
 gymnasium[atari]
+gymnasium[accept-rom-license]
 ale-py
 torch
 wandb

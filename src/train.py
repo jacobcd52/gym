@@ -10,7 +10,6 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.cuda.amp.grad_scaler import GradScaler
 from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
 from .agent import Agent
 from .utils import record_episode
 
@@ -118,8 +117,7 @@ def train(config):
     
     completed_episodes = 0
     update = 1
-    
-    pbar = tqdm(total=config['total_episodes'], desc="Training Progress")
+    recent_scores = []  # Track recent scores for printing
     
     while completed_episodes < config['total_episodes']:
         # Print GPU memory usage every 10 updates
@@ -155,17 +153,12 @@ def train(config):
             # Handle episode logging for both old and new Gymnasium versions
             if "final_info" in infos:
                 # Old Gymnasium version
-                best_score = 0.0
-                completed_count = 0
-                
                 for info in infos["final_info"]:
                     if info and "episode" in info:
-                        pbar.update(1)
                         completed_episodes += 1
-                        completed_count += 1
                         # Only log if length > 0
                         if info['episode']['l'] > 0:
-                            best_score = max(best_score, info['episode']['r'])
+                            recent_scores.append(info['episode']['r'])  # Track the score
                             if completed_episodes % config['save_video_freq'] == 0 and config['capture_video']:
                                 record_episode(agent, config, run_name, completed_episodes)
                             writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
@@ -178,10 +171,18 @@ def train(config):
                                     "episode_length": info["episode"]["l"],
                                     "global_step": global_step
                                 })
-                
-                # Print the best score from this batch every 25 episodes
-                if completed_episodes % 25 == 0 and completed_count > 0:
-                    print(f"\nEpisode: {completed_episodes}, Best Score: {best_score:.2f}")
+                            
+                            # Print score every 50 episodes
+                            if completed_episodes % 50 == 0:
+                                if len(recent_scores) >= 50:
+                                    last_50_scores = recent_scores[-50:]
+                                    best_score = max(last_50_scores)
+                                    avg_score = sum(last_50_scores) / len(last_50_scores)
+                                    print(f"\nEpisode: {completed_episodes}, Best Score: {best_score:.2f}, Avg Score: {avg_score:.2f}")
+                                else:
+                                    best_score = max(recent_scores) if recent_scores else 0.0
+                                    avg_score = sum(recent_scores) / len(recent_scores) if recent_scores else 0.0
+                                    print(f"\nEpisode: {completed_episodes}, Best Score: {best_score:.2f}, Avg Score: {avg_score:.2f}")
             elif "episode" in infos:
                 # New Gymnasium version - episode info is directly in infos
                 episode_info = infos["episode"]
@@ -192,17 +193,11 @@ def train(config):
                         returns = episode_info["r"]
                         lengths = episode_info["l"]
                         
-                        # Track the best score in this batch
-                        best_score = 0.0
-                        completed_count = 0
-                        
                         # Log each completed episode
                         for i, (ret, length) in enumerate(zip(returns, lengths)):
                             if length > 0:  # Only log real completed episodes
-                                pbar.update(1)
                                 completed_episodes += 1
-                                completed_count += 1
-                                best_score = max(best_score, ret)
+                                recent_scores.append(ret)  # Track the score
                                 
                                 if completed_episodes % config['save_video_freq'] == 0 and config['capture_video']:
                                     record_episode(agent, config, run_name, completed_episodes)
@@ -217,10 +212,18 @@ def train(config):
                                         "episode_length": length,
                                         "global_step": global_step
                                     })
-                        
-                        # Print the best score from this batch every 25 episodes
-                        if completed_episodes % 25 == 0 and completed_count > 0:
-                            print(f"\nEpisode: {completed_episodes}, Best Score: {best_score:.2f}")
+                                
+                                # Print score every 50 episodes
+                                if completed_episodes % 50 == 0:
+                                    if len(recent_scores) >= 50:
+                                        last_50_scores = recent_scores[-50:]
+                                        best_score = max(last_50_scores)
+                                        avg_score = sum(last_50_scores) / len(last_50_scores)
+                                        print(f"\nEpisode: {completed_episodes}, Best Score: {best_score:.2f}, Avg Score: {avg_score:.2f}")
+                                    else:
+                                        best_score = max(recent_scores) if recent_scores else 0.0
+                                        avg_score = sum(recent_scores) / len(recent_scores) if recent_scores else 0.0
+                                        print(f"\nEpisode: {completed_episodes}, Best Score: {best_score:.2f}, Avg Score: {avg_score:.2f}")
 
 
         # bootstrap value if not done
@@ -339,7 +342,6 @@ def train(config):
         
         update += 1
         
-    pbar.close()
     # Save model
     model_path = f"runs/{run_name}/{config['env_id']}.pt"
     torch.save(agent.state_dict(), model_path)

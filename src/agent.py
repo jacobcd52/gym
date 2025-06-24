@@ -17,6 +17,7 @@ class Agent(nn.Module):
         is_image_space = isinstance(envs.single_observation_space, gym.spaces.Box) and len(envs.single_observation_space.shape) > 1
 
         if is_image_space:
+            print("Image space type environment")
             # CNN for image-based observations
             # TODO: make dims configurable
             self.network = nn.Sequential(
@@ -32,6 +33,7 @@ class Agent(nn.Module):
             )
             self.final_hidden_size = config['hidden_size']  # For image-based observations
         else:
+            print("Vector space type environment")
             # MLP for vector-based observations
             input_size = np.array(envs.single_observation_space.shape).prod()
             hidden_sizes = config.get('hidden_sizes', [config['hidden_size']])

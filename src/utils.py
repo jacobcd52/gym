@@ -9,12 +9,10 @@ def save_video(frames, folder, filename):
     """Saves a list of frames as an mp4 video."""
     path = os.path.join(folder, filename)
     os.makedirs(folder, exist_ok=True)
-    imageio.mimwrite(path, frames, fps=30)
+    imageio.mimwrite(path, frames, fps=30, macro_block_size=1)
 
 def record_episode(agent, config, run_name, episode_idx):
     """Records a single episode and saves it as a video."""
-    print(f"\nRecording episode {episode_idx}...")
-    
     # Create a single, non-vectorized environment for recording
     env = gym.make(config['env_id'], render_mode="rgb_array")
     
@@ -37,7 +35,6 @@ def record_episode(agent, config, run_name, episode_idx):
         done = terminated or truncated
         
     save_video(frames, f"videos/{run_name}", f"episode-{episode_idx}.mp4")
-    print(f"Episode {episode_idx} recording complete.")
     env.close()
 
 def watch_episode(path):
