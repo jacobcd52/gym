@@ -83,18 +83,27 @@ class Agent(nn.Module):
                 cnn_output_size = dummy_output.shape[1]
                 print(f"CNN output size: {cnn_output_size}")
             
-            # Add the final linear layer
+            # MLP for the part after CNN
+            hidden_sizes = config['hidden_sizes']
+            
+            mlp_layers = []
+            prev_size = cnn_output_size
+            
+            for hidden_size in hidden_sizes:
+                mlp_layers.append(layer_init(nn.Linear(prev_size, hidden_size), std=config['layer_init_std']))
+                mlp_layers.append(nn.ReLU())
+                prev_size = hidden_size
+            
             self.network = nn.Sequential(
                 self.cnn,
-                layer_init(nn.Linear(cnn_output_size, config['hidden_size']), std=config['layer_init_std']),
-                nn.ReLU(),
+                *mlp_layers,
             )
-            self.final_hidden_size = config['hidden_size']  # For image-based observations
+            self.final_hidden_size = hidden_sizes[-1]
         else:
             print("Vector space type environment")
             # MLP for vector-based observations
             input_size = np.array(envs.single_observation_space.shape).prod()
-            hidden_sizes = config.get('hidden_sizes', [config['hidden_size']])
+            hidden_sizes = config['hidden_sizes']
             
             layers = []
             prev_size = input_size

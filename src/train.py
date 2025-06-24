@@ -18,22 +18,12 @@ from torch.utils.tensorboard import SummaryWriter
 from .agent import Agent
 from .utils import record_episode
 
-class EpisodeTrigger:
-    def __init__(self, save_video_freq, video_length):
-        self.save_video_freq = save_video_freq
-        self.video_length = video_length
-        self.episode_count = -1
-
-    def __call__(self, episode_id):
-        self.episode_count += 1
-        return self.episode_count % self.save_video_freq == 0
-
-def make_env(env_id, seed, idx, capture_video, run_name, video_length, max_episode_steps, record_trigger=None):
+def make_env(env_id, seed, idx, capture_video, run_name, video_length, max_episode_steps, record_video_trigger=None):
     def thunk():
         if "NoFrameskip" in env_id:
             env = gym.make(env_id, render_mode="rgb_array", full_action_space=False)
-            env = AtariPreprocessing(env, frame_skip=1, screen_size=84, grayscale_obs=True, scale_obs=False, terminal_on_life_loss=True)
             env = RecordEpisodeStatistics(env)
+            env = AtariPreprocessing(env, frame_skip=1, screen_size=84, grayscale_obs=True, scale_obs=False, terminal_on_life_loss=True)
             env = FrameStack(env, 4)
         else:
             env = gym.make(env_id, render_mode="rgb_array")
@@ -41,7 +31,7 @@ def make_env(env_id, seed, idx, capture_video, run_name, video_length, max_episo
 
         if capture_video and idx == 0:
             env = RecordVideo(env, f"videos/{run_name}", 
-                                         episode_trigger=record_trigger if record_trigger is not None else lambda x: False,
+                                         episode_trigger=record_video_trigger,
                                          video_length=video_length,
                                          name_prefix=f"rl-video")
         
@@ -93,8 +83,8 @@ def train(config):
 
     # Video recording trigger
     if config.get('capture_video', False):
-        video_update_trigger = lambda u: u % 100 == 0
-        current_video_update = -1
+        video_update_trigger = lambda u: u % config['save_video_freq'] == 0
+        current_video_update = -1 # -1 means no video is being recorded
 
     # env setup
     envs = gym.vector.SyncVectorEnv(
@@ -104,7 +94,7 @@ def train(config):
                   run_name, 
                   config['video_length'], 
                   config['max_episode_steps'],
-                  record_trigger=lambda ep_id: current_video_update != -1) 
+                  record_video_trigger=lambda ep_id: current_video_update != -1)
          for i in range(config['num_envs'])]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
@@ -137,9 +127,9 @@ def train(config):
     while completed_episodes < config['total_episodes']:
         if config.get('capture_video', False) and video_update_trigger(update):
             current_video_update = update
-            # Set a unique name for the video to be recorded
-            envs.set_attr('name_prefix', f'update-{update}',
-            indices=0)
+            # Set a unique name for the video to be recorded.
+            # We need to set the attribute for all environments, but it will only be used by env 0.
+            envs.set_attr('name_prefix', [f'update-{update}'] * config['num_envs'])
 
         # Print GPU memory usage every 10 updates
         if update % 10 == 0 and torch.cuda.is_available():
@@ -173,7 +163,7 @@ def train(config):
             
             # Check for episode completion and log data
             if "final_info" in infos:
-                if current_video_update != -1 and infos['_final_info'][0]:
+                if config.get('capture_video', False) and current_video_update != -1 and infos['_final_info'][0]:
                     print(f"Video for update {current_video_update} saved.")
                     current_video_update = -1 # Reset trigger
 
