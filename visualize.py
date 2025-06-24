@@ -1,90 +1,135 @@
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
-import argparse
 import os
+import time
 
 def visualize_trajectory(trajectory_path):
     """
-    Visualizes a saved trajectory with an interactive slider.
+    Visualizes a saved trajectory with an interactive slider and play button.
     """
+    # Initialize session state
+    if 'playing' not in st.session_state:
+        st.session_state.playing = False
+    if 'frame_idx' not in st.session_state:
+        st.session_state.frame_idx = 0
+    if 'playback_speed' not in st.session_state:
+        st.session_state.playback_speed = "1x"
+    if 'current_trajectory' not in st.session_state:
+        st.session_state.current_trajectory = None
+
+    # Reset frame index if trajectory changes
+    if st.session_state.current_trajectory != trajectory_path:
+        st.session_state.current_trajectory = trajectory_path
+        st.session_state.frame_idx = 0
+        st.session_state.playing = False
+
     try:
         data = np.load(trajectory_path)
-        observations = data['observations']
+        states = data['states']
         advantages = data['advantages']
     except FileNotFoundError:
         st.error(f"Trajectory file not found at: {trajectory_path}")
         return
+    except Exception as e:
+        st.error(f"Failed to load or process trajectory file: {e}")
+        return
 
     st.title("Trajectory Visualization")
 
-    # Frame slider
-    num_frames = len(observations)
+    # Initialize session state for play functionality
+    if 'playing' not in st.session_state:
+        st.session_state.playing = False
+    if 'frame_idx' not in st.session_state:
+        st.session_state.frame_idx = 0
+    if 'playback_speed' not in st.session_state:
+        st.session_state.playback_speed = "1x"
+
+    num_frames = len(states)
     if num_frames == 0:
         st.warning("Trajectory is empty.")
         return
-        
-    frame_idx = st.slider("Frame", 0, num_frames - 1, 0)
 
-    # Display observation
-    st.subheader(f"Frame {frame_idx}")
+    # Layout for controls
+    control_cols = st.columns([1, 1, 5])
+    play_button = control_cols[0].button('▶️ Play' if not st.session_state.playing else '❚❚ Pause', use_container_width=True)
     
-    # Handle different observation shapes
-    obs = observations[frame_idx]
-    if len(obs.shape) == 3 and (obs.shape[0] == 4 or obs.shape[2] == 4): # Stacked frames for Atari
-        # Assuming channels-first (C, H, W) for FrameStack
-        if obs.shape[0] == 4:
-            # Display frames in a row
-            st.image([obs[i] for i in range(4)], width=150, caption=[f"Frame {i}" for i in range(4)])
-        else: # Assuming channels-last (H, W, C)
-            st.image(obs, caption="Observation", use_column_width=True)
+    speed_options = ["1x", "2x", "4x", "8x"]
+    st.session_state.playback_speed = control_cols[1].selectbox("Speed", speed_options, index=speed_options.index(st.session_state.playback_speed))
+    
+    # Slider logic needs to be handled carefully with session state for play mode
+    st.session_state.frame_idx = control_cols[2].slider("Frame", 0, num_frames - 1, st.session_state.frame_idx)
 
-    elif len(obs.shape) == 2 or (len(obs.shape) == 3 and obs.shape[2] in [1, 3]): # Grayscale or RGB
-        st.image(obs, caption="Observation", use_column_width=True)
-    else: # Vector-based observation
-        st.text("Vector Observation:")
-        st.write(obs)
+    if play_button:
+        st.session_state.playing = not st.session_state.playing
 
+    # Main layout for video and plot
+    col1, col2 = st.columns(2)
 
-    # Plot advantages
-    st.subheader("Advantages vs. Timestep")
-    fig, ax = plt.subplots()
-    ax.plot(advantages)
-    ax.set_xlabel("Timestep")
-    ax.set_ylabel("Advantage (GAE)")
-    ax.axvline(x=frame_idx, color='r', linestyle='--', label=f'Current Timestep: {frame_idx}')
-    ax.legend()
-    st.pyplot(fig)
+    # Column 1: Display observation
+    with col1:
+        st.subheader(f"Frame {st.session_state.frame_idx}")
+        obs = states[st.session_state.frame_idx] # Shape: (C, H, W)
+        if len(obs.shape) == 3 and obs.shape[0] == 4: # Stacked frames for Atari
+            st.image(obs[-1], caption="Current Observation", use_container_width=True)
+        elif len(obs.shape) == 2 or (len(obs.shape) == 3 and obs.shape[2] in [1, 3]): # Grayscale or RGB
+            st.image(obs, caption="Observation", use_container_width=True)
+        else: # Vector-based observation
+            st.text("Vector Observation:")
+            st.write(obs)
+
+    # Column 2: Plot advantages
+    with col2:
+        st.subheader("Advantages vs. Timestep")
+        fig, ax = plt.subplots()
+        ax.plot(advantages)
+        ax.set_xlabel("Timestep")
+        ax.set_ylabel("Advantage (GAE)")
+        ax.axvline(x=st.session_state.frame_idx, color='r', linestyle='--', label=f'Current Timestep')
+        ax.legend()
+        st.pyplot(fig, use_container_width=True)
+
+    if st.session_state.playing:
+        if st.session_state.frame_idx < num_frames - 1:
+            st.session_state.frame_idx += 1
+        else:
+            st.session_state.playing = False # Stop at the end
+        
+        speed_multiplier = float(st.session_state.playback_speed.replace('x', ''))
+        base_delay = 0.1
+        time.sleep(base_delay / speed_multiplier) # Control playback speed
+        st.rerun()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Visualize a PPO agent's trajectory.")
-    parser.add_argument("trajectory_path", type=str, help="Path to the .npz trajectory file.")
+    st.sidebar.title("Load Trajectory")
     
-    # Check if running in Streamlit's context. If so, don't parse args from command line.
-    try:
-        # This is a bit of a hack to get the script argument in streamlit
-        args = parser.parse_args()
-        trajectory_path = args.trajectory_path
-    except SystemExit:
-        # This will be raised by argparse in Streamlit environment.
-        # We assume the path is provided through some other means if not command line
-        # For development, you might hardcode a path or use a file uploader.
-        
-        # Simple solution: Use a file_uploader if no arg is passed
-        st.sidebar.title("Upload Trajectory")
-        uploaded_file = st.sidebar.file_uploader("Choose a .npz file", type="npz")
-        
-        if uploaded_file is not None:
-            # To use the uploader, we need to save the file temporarily
-            with open("temp_trajectory.npz", "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            trajectory_path = "temp_trajectory.npz"
+    # Option to select a run
+    runs_dir = "trajectories"
+    if os.path.exists(runs_dir):
+        # List all environment folders (like 'ALE')
+        env_folders = [d for d in os.listdir(runs_dir) if os.path.isdir(os.path.join(runs_dir, d))]
+        selected_env = st.sidebar.selectbox("Select an environment", sorted(env_folders))
+
+        if selected_env:
+            env_path = os.path.join(runs_dir, selected_env)
+            run_folders = [d for d in os.listdir(env_path) if os.path.isdir(os.path.join(env_path, d))]
+            selected_run = st.sidebar.selectbox("Select a run", sorted(run_folders, reverse=True))
+
+            if selected_run:
+                trajectory_dir = os.path.join(env_path, selected_run)
+                trajectory_files = [f for f in os.listdir(trajectory_dir) if f.endswith('.npz')]
+                
+                if trajectory_files:
+                    selected_trajectory_file = st.sidebar.selectbox("Select a trajectory", sorted(trajectory_files))
+                    trajectory_path = os.path.join(trajectory_dir, selected_trajectory_file)
+                    st.sidebar.markdown(f"**Loaded:** `{selected_trajectory_file}`")
+                    visualize_trajectory(trajectory_path)
+                else:
+                    st.warning(f"No trajectory files found in `{trajectory_dir}`.")
+            else:
+                st.info(f"No runs found in the '{selected_env}' directory.")
         else:
-            st.info("Please upload a trajectory file to begin.")
-            st.stop()
-            
-    visualize_trajectory(trajectory_path)
-    
-    # Clean up temp file if it exists
-    if 'trajectory_path' in locals() and trajectory_path == "temp_trajectory.npz" and os.path.exists(trajectory_path):
-        os.remove(trajectory_path) 
+            st.info("No environments found in the 'trajectories' directory.")
+    else:
+        st.error("'trajectories' directory not found.")
+        st.info("Please run training first to generate trajectories.") 

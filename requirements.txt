@@ -1,5 +1,7 @@
-torch
-gymnasium[atari,box2d]
+torch==2.7.0
+torchaudio==2.7.0
+torchvision==0.22.0
+gymnasium[atari,box2d,accept-rom-license]==0.29.1
 tensorboard
 wandb
 matplotlib
@@ -7,3 +9,5 @@ streamlit
 numpy
 imageio
 moviepy
+torchinfo
+pygame

@@ -18,7 +18,7 @@ from torch.utils.tensorboard import SummaryWriter
 from .agent import Agent
 from .utils import record_episode
 
-def make_env(env_id, seed, idx, capture_video, run_name, video_length, max_episode_steps, record_video_trigger=None):
+def make_env(env_id, seed, idx, run_name, max_episode_steps):
     def thunk():
         if "NoFrameskip" in env_id:
             env = gym.make(env_id, render_mode="rgb_array", full_action_space=False)
@@ -29,12 +29,6 @@ def make_env(env_id, seed, idx, capture_video, run_name, video_length, max_episo
             env = gym.make(env_id, render_mode="rgb_array")
             env = RecordEpisodeStatistics(env)
 
-        if capture_video and idx == 0:
-            env = RecordVideo(env, f"videos/{run_name}", 
-                                         episode_trigger=record_video_trigger,
-                                         video_length=video_length,
-                                         name_prefix=f"rl-video")
-        
         # Apply episode length limit if specified
         if max_episode_steps is not None:
             env = TimeLimit(env, max_episode_steps=max_episode_steps)
@@ -81,23 +75,25 @@ def train(config):
     else:
         scaler = None
 
-    # Video recording trigger
-    if config.get('capture_video', False):
-        video_update_trigger = lambda u: u % config['save_video_freq'] == 0
-        current_video_update = -1 # -1 means no video is being recorded
-
     # env setup
     envs = gym.vector.SyncVectorEnv(
         [make_env(config['env_id'], 
                   config['seed'] + i, i, 
-                  config.get('capture_video', False), 
                   run_name, 
-                  config['video_length'], 
-                  config['max_episode_steps'],
-                  record_video_trigger=lambda ep_id: current_video_update != -1)
+                  config['max_episode_steps'])
          for i in range(config['num_envs'])]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    assert envs.single_observation_space is not None, "single_observation_space is None"
+    assert envs.single_action_space is not None, "single_action_space is not None"
+
+    # Create trajectory directory
+    trajectory_path = f"trajectories/{run_name}"
+    os.makedirs(trajectory_path, exist_ok=True)
+    
+    # Buffers for trajectory saving
+    per_env_buffers = [{"states": [], "advantages": []} for _ in range(config['num_envs'])]
+    episode_count = [0] * config['num_envs']
 
     agent = Agent(envs, config).to(device)
     print(f"Agent device: {next(agent.parameters()).device}")
@@ -125,12 +121,6 @@ def train(config):
     recent_scores = []
     
     while completed_episodes < config['total_episodes']:
-        if config.get('capture_video', False) and video_update_trigger(update):
-            current_video_update = update
-            # Set a unique name for the video to be recorded.
-            # We need to set the attribute for all environments, but it will only be used by env 0.
-            envs.set_attr('name_prefix', [f'update-{update}'] * config['num_envs'])
-
         # Print GPU memory usage every 10 updates
         if update % 10 == 0 and torch.cuda.is_available():
             print(f"Update {update}: GPU Memory Usage: {torch.cuda.memory_allocated() / 1e6:.2f} MB")
@@ -163,10 +153,6 @@ def train(config):
             
             # Check for episode completion and log data
             if "final_info" in infos:
-                if config.get('capture_video', False) and current_video_update != -1 and infos['_final_info'][0]:
-                    print(f"Video for update {current_video_update} saved.")
-                    current_video_update = -1 # Reset trigger
-
                 for info in infos["final_info"]:
                     if info and "episode" in info:
                         completed_episodes += 1
@@ -208,6 +194,34 @@ def train(config):
                 delta = rewards[t] + config['gamma'] * nextvalues * nextnonterminal - values[t]
                 advantages[t] = lastgaelam = delta + config['gamma'] * config['gae_lambda'] * nextnonterminal * lastgaelam
             returns = advantages + values
+
+        # Save trajectories
+        for i in range(config['num_envs']):
+            for t in range(config['num_steps']):
+                # Move to CPU and convert to uint8 to save space.
+                # Assuming observations are images with values in [0, 255]
+                state_to_save = obs[t, i].cpu().to(torch.uint8)
+                per_env_buffers[i]["states"].append(state_to_save)
+                per_env_buffers[i]["advantages"].append(advantages[t, i].cpu())
+
+                if dones[t, i]:
+                    # Subsample frames
+                    subsampled_states = per_env_buffers[i]["states"][::config['trajectory_save_every_n_frames']]
+                    subsampled_advantages = per_env_buffers[i]["advantages"][::config['trajectory_save_every_n_frames']]
+                    
+                    # Episode finished, save trajectory
+                    trajectory = {
+                        "states": torch.stack(subsampled_states).numpy(),
+                        # Reduce precision to save space
+                        "advantages": torch.stack(subsampled_advantages).numpy().astype(np.float16),
+                    }
+                    save_path = f"{trajectory_path}/env_{i}_episode_{episode_count[i]}.npz"
+                    np.savez_compressed(save_path, **trajectory)
+                    
+                    # Reset buffer for the next episode
+                    per_env_buffers[i]["states"] = []
+                    per_env_buffers[i]["advantages"] = []
+                    episode_count[i] += 1
 
         # flatten the batch
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)

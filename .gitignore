@@ -1,3 +1,4 @@
 wandb/
 *.pt
 *.mp4
+*.npz
