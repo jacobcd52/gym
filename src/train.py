@@ -178,10 +178,16 @@ def train(config):
                                     last_50_scores = recent_scores[-50:]
                                     best_score = max(last_50_scores)
                                     avg_score = sum(last_50_scores) / len(last_50_scores)
+                                    # Convert to scalar if needed
+                                    best_score = float(best_score) if hasattr(best_score, 'item') else best_score
+                                    avg_score = float(avg_score) if hasattr(avg_score, 'item') else avg_score
                                     print(f"\nEpisode: {completed_episodes}, Best Score: {best_score:.2f}, Avg Score: {avg_score:.2f}")
                                 else:
                                     best_score = max(recent_scores) if recent_scores else 0.0
                                     avg_score = sum(recent_scores) / len(recent_scores) if recent_scores else 0.0
+                                    # Convert to scalar if needed
+                                    best_score = float(best_score) if hasattr(best_score, 'item') else best_score
+                                    avg_score = float(avg_score) if hasattr(avg_score, 'item') else avg_score
                                     print(f"\nEpisode: {completed_episodes}, Best Score: {best_score:.2f}, Avg Score: {avg_score:.2f}")
             elif "episode" in infos:
                 # New Gymnasium version - episode info is directly in infos
@@ -219,12 +225,17 @@ def train(config):
                                         last_50_scores = recent_scores[-50:]
                                         best_score = max(last_50_scores)
                                         avg_score = sum(last_50_scores) / len(last_50_scores)
+                                        # Convert to scalar if needed
+                                        best_score = float(best_score) if hasattr(best_score, 'item') else best_score
+                                        avg_score = float(avg_score) if hasattr(avg_score, 'item') else avg_score
                                         print(f"\nEpisode: {completed_episodes}, Best Score: {best_score:.2f}, Avg Score: {avg_score:.2f}")
                                     else:
                                         best_score = max(recent_scores) if recent_scores else 0.0
                                         avg_score = sum(recent_scores) / len(recent_scores) if recent_scores else 0.0
+                                        # Convert to scalar if needed
+                                        best_score = float(best_score) if hasattr(best_score, 'item') else best_score
+                                        avg_score = float(avg_score) if hasattr(avg_score, 'item') else avg_score
                                         print(f"\nEpisode: {completed_episodes}, Best Score: {best_score:.2f}, Avg Score: {avg_score:.2f}")
-
 
         # bootstrap value if not done
         with torch.no_grad():

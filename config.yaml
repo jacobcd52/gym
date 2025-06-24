@@ -1,5 +1,5 @@
 # High GPU utilization configuration
-env_id: 'CartPole-v1'                    # Gymnasium environment to train on
+env_id: 'ALE/Pacman-v5'                    # Gymnasium environment to train on
 total_episodes: 10_000                      # Total number of episodes to train for
 num_envs: 512                              # Number of parallel environments for vectorized training
 num_steps: 128                           # Number of steps to run per update (affects batch size)
