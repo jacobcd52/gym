@@ -1,12 +1,12 @@
 # High GPU utilization configuration
 env_id: 'CartPole-v1'                    # Gymnasium environment to train on
-total_episodes: 300                     # Total number of episodes to train for
+total_episodes: 2000                      # Total number of episodes to train for
 num_envs: 8                              # Number of parallel environments for vectorized training
 num_steps: 128                           # Number of steps to run per update (affects batch size)
 seed: 42                                 # Random seed for reproducibility
 torch_deterministic: true                # Whether to use deterministic PyTorch operations
 cuda: true                               # Whether to use GPU acceleration
-max_episode_steps: 512                    # Maximum steps per episode (truncates long episodes)
+max_episode_steps: 1000                    # Maximum steps per episode (truncates long episodes)
 
 # agent.py
 learning_rate: 1.0e-3                 # Learning rate for the Adam optimizer
@@ -31,5 +31,6 @@ wandb_project_name: "ppo-gym"            # Weights & Biases project name for log
 wandb_entity: null                       # Weights & Biases entity/username (null = default)
 
 # video saving
-save_video_freq: 50                     # Save video every N episodes
-video_length: 200                        # Maximum number of frames to record per video 
+capture_video: true                      # Whether to capture videos of agent performance
+save_video_freq: 50                      # Save video every N episodes
+video_length: 1000                       # Maximum number of frames to record per video 

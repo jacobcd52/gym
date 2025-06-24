@@ -12,15 +12,26 @@ from torch.cuda.amp.grad_scaler import GradScaler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from .agent import Agent
+from .utils import record_episode
 
-def make_env(env_id, seed, idx, capture_video, run_name, video_length, save_video_freq, max_episode_steps):
+class EpisodeTrigger:
+    def __init__(self, save_video_freq, video_length):
+        self.save_video_freq = save_video_freq
+        self.video_length = video_length
+        self.episode_count = -1
+
+    def __call__(self, episode_id):
+        self.episode_count += 1
+        return self.episode_count % self.save_video_freq == 0
+
+def make_env(env_id, seed, idx, capture_video, run_name, video_length, episode_trigger, max_episode_steps):
     def thunk():
         env = gym.make(env_id, render_mode="rgb_array")
         env = gym.wrappers.RecordEpisodeStatistics(env)
         if capture_video:
             if idx == 0:
                 env = gym.wrappers.RecordVideo(env, f"videos/{run_name}", 
-                                             episode_trigger=lambda x: x % save_video_freq == 0, 
+                                             episode_trigger=episode_trigger, 
                                              video_length=video_length)
         
         # Apply episode length limit if specified
@@ -76,9 +87,11 @@ def train(config):
     else:
         scaler = None
 
+    video_trigger = EpisodeTrigger(config['save_video_freq'], config['video_length'])
+
     # env setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(config['env_id'], config['seed'] + i, i, True, run_name, config['video_length'], config['save_video_freq'], config['max_episode_steps']) for i in range(config['num_envs'])]
+        [make_env(config['env_id'], config['seed'] + i, i, True, run_name, config['video_length'], video_trigger, config['max_episode_steps']) for i in range(config['num_envs'])]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
@@ -94,7 +107,7 @@ def train(config):
     dones = torch.zeros((config['num_steps'], config['num_envs'])).to(device)
     values = torch.zeros((config['num_steps'], config['num_envs'])).to(device)
 
-    # TRY NOT TO MODIFY: start the game
+    # TRY NOT to MODIFY: start the game
     global_step = 0
     start_time = time.time()
     next_obs, _ = envs.reset(seed=config['seed'])
@@ -142,22 +155,33 @@ def train(config):
             # Handle episode logging for both old and new Gymnasium versions
             if "final_info" in infos:
                 # Old Gymnasium version
+                best_score = 0.0
+                completed_count = 0
+                
                 for info in infos["final_info"]:
                     if info and "episode" in info:
                         pbar.update(1)
                         completed_episodes += 1
-                        if completed_episodes % 25 == 0:
-                            print(f"\nEpisode: {completed_episodes}, Score: {info['episode']['r']:.2f}")
-                        writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                        writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                        # Add direct wandb logging to ensure metrics appear
-                        if config['wandb_project_name']:
-                            import wandb
-                            wandb.log({
-                                "episode_return": info["episode"]["r"],
-                                "episode_length": info["episode"]["l"],
-                                "global_step": global_step
-                            })
+                        completed_count += 1
+                        # Only log if length > 0
+                        if info['episode']['l'] > 0:
+                            best_score = max(best_score, info['episode']['r'])
+                            if completed_episodes % config['save_video_freq'] == 0 and config['capture_video']:
+                                record_episode(agent, config, run_name, completed_episodes)
+                            writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
+                            writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                            # Add direct wandb logging to ensure metrics appear
+                            if config['wandb_project_name']:
+                                import wandb
+                                wandb.log({
+                                    "episode_return": info["episode"]["r"],
+                                    "episode_length": info["episode"]["l"],
+                                    "global_step": global_step
+                                })
+                
+                # Print the best score from this batch every 25 episodes
+                if completed_episodes % 25 == 0 and completed_count > 0:
+                    print(f"\nEpisode: {completed_episodes}, Best Score: {best_score:.2f}")
             elif "episode" in infos:
                 # New Gymnasium version - episode info is directly in infos
                 episode_info = infos["episode"]
@@ -168,13 +192,21 @@ def train(config):
                         returns = episode_info["r"]
                         lengths = episode_info["l"]
                         
+                        # Track the best score in this batch
+                        best_score = 0.0
+                        completed_count = 0
+                        
                         # Log each completed episode
                         for i, (ret, length) in enumerate(zip(returns, lengths)):
-                            if ret is not None:  # Episode completed
+                            if length > 0:  # Only log real completed episodes
                                 pbar.update(1)
                                 completed_episodes += 1
-                                if completed_episodes % 25 == 0:
-                                    print(f"\nEpisode: {completed_episodes}, Score: {ret:.2f}")
+                                completed_count += 1
+                                best_score = max(best_score, ret)
+                                
+                                if completed_episodes % config['save_video_freq'] == 0 and config['capture_video']:
+                                    record_episode(agent, config, run_name, completed_episodes)
+                                
                                 writer.add_scalar("charts/episodic_return", ret, global_step)
                                 writer.add_scalar("charts/episodic_length", length, global_step)
                                 # Add direct wandb logging to ensure metrics appear
@@ -185,6 +217,10 @@ def train(config):
                                         "episode_length": length,
                                         "global_step": global_step
                                     })
+                        
+                        # Print the best score from this batch every 25 episodes
+                        if completed_episodes % 25 == 0 and completed_count > 0:
+                            print(f"\nEpisode: {completed_episodes}, Best Score: {best_score:.2f}")
 
 
         # bootstrap value if not done
