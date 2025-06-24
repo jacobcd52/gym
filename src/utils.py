@@ -4,6 +4,7 @@ import numpy as np
 import pygame
 import torch
 import gymnasium as gym
+from gymnasium import wrappers
 
 def save_video(frames, folder, filename):
     """Saves a list of frames as an mp4 video."""
@@ -11,30 +12,83 @@ def save_video(frames, folder, filename):
     os.makedirs(folder, exist_ok=True)
     imageio.mimwrite(path, frames, fps=30, macro_block_size=1)
 
-def record_episode(agent, config, run_name, episode_idx):
-    """Records a single episode and saves it as a video."""
-    # Create a single, non-vectorized environment for recording
-    env = gym.make(config['env_id'], render_mode="rgb_array")
+def record_episode(agent, config, run_name, completed_episodes):
+    """
+    Records an episode by saving observations and advantages.
+    """
+    trajectories_dir = f"trajectories/{run_name}"
+    os.makedirs(trajectories_dir, exist_ok=True)
     
-    # Add the same wrappers as the training environment
-    is_atari = "NoFrameskip" in config['env_id']
-    if is_atari:
-        env = gym.wrappers.ResizeObservation(env, (84, 84))
-        env = gym.wrappers.GrayScaleObservation(env)
-        env = gym.wrappers.FrameStack(env, 4)
+    env_id = config['env_id']
+    device = next(agent.parameters()).device
 
-    frames = []
+    # Create a single environment for recording
+    env = gym.make(env_id, render_mode="rgb_array")
+    is_atari = "NoFrameskip" in env_id
+    if is_atari:
+        env = wrappers.ResizeObservation(env, (84, 84))
+        env = wrappers.GrayScaleObservation(env)
+        env = wrappers.FrameStack(env, 4)
+
+    obs_list, reward_list, done_list, value_list = [], [], [], []
+    
     obs, _ = env.reset()
     done = False
     
-    while not done:
-        frames.append(env.render())
-        with torch.no_grad():
-            action, _, _, _ = agent.get_action_and_value(torch.Tensor(obs).unsqueeze(0).to(next(agent.parameters()).device))
-        obs, _, terminated, truncated, _ = env.step(action.item())
-        done = terminated or truncated
+    with torch.no_grad():
+        while not done:
+            # For atari, obs is a LazyFrame. We need to convert it to a numpy array.
+            current_obs = np.array(obs)
+            obs_tensor = torch.Tensor(current_obs).to(device).unsqueeze(0)
+            
+            # Get agent's action and value
+            action, _, _, value = agent.get_action_and_value(obs_tensor)
+            
+            # Store observation and value
+            obs_list.append(current_obs)
+            value_list.append(value.cpu().item())
+            
+            # Step the environment
+            next_obs, reward, terminated, truncated, _ = env.step(action.cpu().numpy()[0])
+            done = terminated or truncated
+            
+            reward_list.append(reward)
+            done_list.append(done)
+            
+            obs = next_obs
+            
+        # Add the final observation's value
+        final_obs = np.array(obs)
+        next_value = agent.get_value(torch.Tensor(final_obs).to(device).unsqueeze(0)).cpu().item()
+
+        # Calculate advantages using GAE
+        advantages = []
+        last_gae_lam = 0
+        num_steps = len(reward_list)
         
-    save_video(frames, f"videos/{run_name}", f"episode-{episode_idx}.mp4")
+        for t in reversed(range(num_steps)):
+            if t == num_steps - 1:
+                next_non_terminal = 0.0
+                next_val = next_value
+            else:
+                next_non_terminal = 1.0 - done_list[t] # use done from current step
+                next_val = value_list[t+1] if t + 1 < len(value_list) else next_value
+
+            if not (t < len(reward_list) and t < len(value_list)):
+                continue
+
+            delta = reward_list[t] + config['gamma'] * next_val * next_non_terminal - value_list[t]
+            last_gae_lam = delta + config['gamma'] * config['gae_lambda'] * next_non_terminal * last_gae_lam
+            advantages.insert(0, last_gae_lam)
+
+    # Save the trajectory and advantages
+    if len(obs_list) == len(advantages):
+        filepath = os.path.join(trajectories_dir, f"episode_{completed_episodes}.npz")
+        np.savez(filepath, observations=np.array(obs_list), advantages=np.array(advantages))
+        print(f"Saved trajectory for episode {completed_episodes} to {filepath}")
+    else:
+        print(f"Skipping saving trajectory for episode {completed_episodes} due to length mismatch: obs({len(obs_list)}) vs adv({len(advantages)})")
+
     env.close()
 
 def watch_episode(path):

@@ -4,6 +4,11 @@ import time
 from distutils.util import strtobool
 
 import gymnasium as gym
+from gymnasium.wrappers.atari_preprocessing import AtariPreprocessing
+from gymnasium.wrappers.frame_stack import FrameStack
+from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
+from gymnasium.wrappers.record_video import RecordVideo
+from gymnasium.wrappers.time_limit import TimeLimit
 import numpy as np
 import torch
 import torch.nn as nn
@@ -23,26 +28,26 @@ class EpisodeTrigger:
         self.episode_count += 1
         return self.episode_count % self.save_video_freq == 0
 
-def make_env(env_id, seed, idx, capture_video, run_name, video_length, episode_trigger, max_episode_steps):
+def make_env(env_id, seed, idx, capture_video, run_name, video_length, max_episode_steps, record_trigger=None):
     def thunk():
-        env = gym.make(env_id, render_mode="rgb_array")
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        if capture_video:
-            if idx == 0:
-                env = gym.wrappers.RecordVideo(env, f"videos/{run_name}", 
-                                             episode_trigger=episode_trigger, 
-                                             video_length=video_length)
+        if "NoFrameskip" in env_id:
+            env = gym.make(env_id, render_mode="rgb_array", full_action_space=False)
+            env = AtariPreprocessing(env, frame_skip=1, screen_size=84, grayscale_obs=True, scale_obs=False, terminal_on_life_loss=True)
+            env = RecordEpisodeStatistics(env)
+            env = FrameStack(env, 4)
+        else:
+            env = gym.make(env_id, render_mode="rgb_array")
+            env = RecordEpisodeStatistics(env)
+
+        if capture_video and idx == 0:
+            env = RecordVideo(env, f"videos/{run_name}", 
+                                         episode_trigger=record_trigger if record_trigger is not None else lambda x: False,
+                                         video_length=video_length,
+                                         name_prefix=f"rl-video")
         
         # Apply episode length limit if specified
         if max_episode_steps is not None:
-            env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
-        
-        is_atari = "NoFrameskip" in env_id
-
-        if is_atari:
-            env = gym.wrappers.ResizeObservation(env, (84, 84))
-            env = gym.wrappers.GrayScaleObservation(env)
-            env = gym.wrappers.FrameStack(env, 4)
+            env = TimeLimit(env, max_episode_steps=max_episode_steps)
 
         env.action_space.seed(seed)
         return env
@@ -86,11 +91,21 @@ def train(config):
     else:
         scaler = None
 
-    video_trigger = EpisodeTrigger(config['save_video_freq'], config['video_length'])
+    # Video recording trigger
+    if config.get('capture_video', False):
+        video_update_trigger = lambda u: u % 100 == 0
+        current_video_update = -1
 
     # env setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(config['env_id'], config['seed'] + i, i, True, run_name, config['video_length'], video_trigger, config['max_episode_steps']) for i in range(config['num_envs'])]
+        [make_env(config['env_id'], 
+                  config['seed'] + i, i, 
+                  config.get('capture_video', False), 
+                  run_name, 
+                  config['video_length'], 
+                  config['max_episode_steps'],
+                  record_trigger=lambda ep_id: current_video_update != -1) 
+         for i in range(config['num_envs'])]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
@@ -117,9 +132,15 @@ def train(config):
     
     completed_episodes = 0
     update = 1
-    recent_scores = []  # Track recent scores for printing
+    recent_scores = []
     
     while completed_episodes < config['total_episodes']:
+        if config.get('capture_video', False) and video_update_trigger(update):
+            current_video_update = update
+            # Set a unique name for the video to be recorded
+            envs.set_attr('name_prefix', f'update-{update}',
+            indices=0)
+
         # Print GPU memory usage every 10 updates
         if update % 10 == 0 and torch.cuda.is_available():
             print(f"Update {update}: GPU Memory Usage: {torch.cuda.memory_allocated() / 1e6:.2f} MB")
@@ -150,92 +171,37 @@ def train(config):
             rewards[step] = torch.tensor(reward).to(device).view(-1)
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(done).to(device)
             
-            # Handle episode logging for both old and new Gymnasium versions
+            # Check for episode completion and log data
             if "final_info" in infos:
-                # Old Gymnasium version
+                if current_video_update != -1 and infos['_final_info'][0]:
+                    print(f"Video for update {current_video_update} saved.")
+                    current_video_update = -1 # Reset trigger
+
                 for info in infos["final_info"]:
                     if info and "episode" in info:
                         completed_episodes += 1
-                        # Only log if length > 0
-                        if info['episode']['l'] > 0:
-                            recent_scores.append(info['episode']['r'])  # Track the score
-                            if completed_episodes % config['save_video_freq'] == 0 and config['capture_video']:
-                                record_episode(agent, config, run_name, completed_episodes)
-                            writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                            writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                            # Add direct wandb logging to ensure metrics appear
-                            if config['wandb_project_name']:
-                                import wandb
-                                wandb.log({
-                                    "episode_return": info["episode"]["r"],
-                                    "episode_length": info["episode"]["l"],
-                                    "global_step": global_step
-                                })
-                            
-                            # Print score every 50 episodes
-                            if completed_episodes % 50 == 0:
-                                if len(recent_scores) >= 50:
-                                    last_50_scores = recent_scores[-50:]
-                                    best_score = max(last_50_scores)
-                                    avg_score = sum(last_50_scores) / len(last_50_scores)
-                                    # Convert to scalar if needed
-                                    best_score = float(best_score) if hasattr(best_score, 'item') else best_score
-                                    avg_score = float(avg_score) if hasattr(avg_score, 'item') else avg_score
-                                    print(f"\nEpisode: {completed_episodes}, Best Score: {best_score:.2f}, Avg Score: {avg_score:.2f}")
-                                else:
-                                    best_score = max(recent_scores) if recent_scores else 0.0
-                                    avg_score = sum(recent_scores) / len(recent_scores) if recent_scores else 0.0
-                                    # Convert to scalar if needed
-                                    best_score = float(best_score) if hasattr(best_score, 'item') else best_score
-                                    avg_score = float(avg_score) if hasattr(avg_score, 'item') else avg_score
-                                    print(f"\nEpisode: {completed_episodes}, Best Score: {best_score:.2f}, Avg Score: {avg_score:.2f}")
-            elif "episode" in infos:
-                # New Gymnasium version - episode info is directly in infos
-                episode_info = infos["episode"]
-                if episode_info is not None:
-                    # Handle vectorized environments - episode_info contains arrays
-                    if isinstance(episode_info, dict) and "r" in episode_info:
-                        # Check if any episodes completed (non-None values)
-                        returns = episode_info["r"]
-                        lengths = episode_info["l"]
+                        episode_return = info["episode"]["r"]
+                        episode_length = info["episode"]["l"]
                         
-                        # Log each completed episode
-                        for i, (ret, length) in enumerate(zip(returns, lengths)):
-                            if length > 0:  # Only log real completed episodes
-                                completed_episodes += 1
-                                recent_scores.append(ret)  # Track the score
-                                
-                                if completed_episodes % config['save_video_freq'] == 0 and config['capture_video']:
-                                    record_episode(agent, config, run_name, completed_episodes)
-                                
-                                writer.add_scalar("charts/episodic_return", ret, global_step)
-                                writer.add_scalar("charts/episodic_length", length, global_step)
-                                # Add direct wandb logging to ensure metrics appear
-                                if config['wandb_project_name']:
-                                    import wandb
-                                    wandb.log({
-                                        "episode_return": ret,
-                                        "episode_length": length,
-                                        "global_step": global_step
-                                    })
-                                
-                                # Print score every 50 episodes
-                                if completed_episodes % 50 == 0:
-                                    if len(recent_scores) >= 50:
-                                        last_50_scores = recent_scores[-50:]
-                                        best_score = max(last_50_scores)
-                                        avg_score = sum(last_50_scores) / len(last_50_scores)
-                                        # Convert to scalar if needed
-                                        best_score = float(best_score) if hasattr(best_score, 'item') else best_score
-                                        avg_score = float(avg_score) if hasattr(avg_score, 'item') else avg_score
-                                        print(f"\nEpisode: {completed_episodes}, Best Score: {best_score:.2f}, Avg Score: {avg_score:.2f}")
-                                    else:
-                                        best_score = max(recent_scores) if recent_scores else 0.0
-                                        avg_score = sum(recent_scores) / len(recent_scores) if recent_scores else 0.0
-                                        # Convert to scalar if needed
-                                        best_score = float(best_score) if hasattr(best_score, 'item') else best_score
-                                        avg_score = float(avg_score) if hasattr(avg_score, 'item') else avg_score
-                                        print(f"\nEpisode: {completed_episodes}, Best Score: {best_score:.2f}, Avg Score: {avg_score:.2f}")
+                        recent_scores.append(episode_return)
+
+                        writer.add_scalar("charts/episodic_return", episode_return, global_step)
+                        writer.add_scalar("charts/episodic_length", episode_length, global_step)
+                        
+                        if config['wandb_project_name']:
+                            wandb.log({
+                                "episode_return": episode_return,
+                                "episode_length": episode_length,
+                                "completed_episodes": completed_episodes,
+                            }, step=global_step)
+                            
+                        # Print average score every 50 episodes
+                        if completed_episodes > 0 and completed_episodes % 50 == 0:
+                            if len(recent_scores) > 0:
+                                avg_score = np.mean(recent_scores[-50:])
+                                print(f"\nEpisodes {completed_episodes-49}-{completed_episodes}: Avg Return={avg_score:.2f}")
+                    elif info:
+                        print(f"DEBUG: info dict found: {info}")
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -322,7 +288,6 @@ def train(config):
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
-
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)

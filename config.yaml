@@ -1,8 +1,8 @@
 # High GPU utilization configuration
-env_id: 'ALE/Pacman-v5'                    # Gymnasium environment to train on
+env_id: 'ALE/Pacman-v5'                  # Gymnasium environment to train on
 total_episodes: 10_000                      # Total number of episodes to train for
-num_envs: 512                              # Number of parallel environments for vectorized training
-num_steps: 128                           # Number of steps to run per update (affects batch size)
+num_envs: 16                              # Number of parallel environments for vectorized training
+num_steps: 64                           # Number of steps to run per update (affects batch size)
 seed: 42                                 # Random seed for reproducibility
 torch_deterministic: true                # Whether to use deterministic PyTorch operations
 cuda: true                               # Whether to use GPU acceleration
@@ -12,8 +12,8 @@ max_episode_steps: 200                    # Maximum steps per episode (truncates
 learning_rate: 1.0e-3               # Learning rate for the Adam optimizer
 gamma: 0.995                              # Discount factor for future rewards
 gae_lambda: 0.95                         # GAE (Generalized Advantage Estimation) lambda parameter
-minibatch_size: 1024                     # Manual minibatch size
-update_epochs: 8                         # Number of epochs to update the policy per batch
+minibatch_size: 256                     # Manual minibatch size
+update_epochs: 4                         # Number of epochs to update the policy per batch
 clip_coef: 0.2                           # PPO clipping coefficient (epsilon). Default 0.2
 ent_coef: 0.01                           # Entropy coefficient for exploration bonus
 vf_coef: 0.5                             # Value function loss coefficient
