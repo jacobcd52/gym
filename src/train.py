@@ -3,6 +3,7 @@ import random
 import time
 from distutils.util import strtobool
 import gc
+import shutil
 from typing import Optional
 
 import gymnasium as gym
@@ -78,6 +79,7 @@ class Trainer:
         self._setup_agent()
         self._setup_storage()
         self._setup_trajectory_saving()
+        self._setup_gradient_saving()
 
     def _setup_logging(self):
         if self.config['wandb_project_name']:
@@ -132,6 +134,14 @@ class Trainer:
     def _setup_agent(self):
         self.agent = Agent(self.envs, self.config).to(self.device)
         print(f"Agent device: {next(self.agent.parameters()).device}")
+        total_params = sum(p.numel() for p in self.agent.parameters())
+        trainable_params = sum(p.numel() for p in self.agent.parameters() if p.requires_grad)
+        print(f"Agent has {trainable_params:,} trainable parameters out of {total_params:,} total parameters.")
+
+        print("Parameter breakdown:")
+        for name, param in self.agent.state_dict().items():
+            print(f"  - {name}: {param.numel():,}")
+
         self.optimizer = optim.Adam(self.agent.parameters(), lr=self.config['learning_rate'], eps=self.config['optimizer_eps'])
 
     def _setup_storage(self):
@@ -149,6 +159,11 @@ class Trainer:
             self.update_obs_buffer = []
             self.update_advantages_buffer = []
     
+    def _setup_gradient_saving(self):
+        if self.config.get('save_gradients', False):
+            self.gradient_path = f"gradients/{self.run_name}"
+            os.makedirs(self.gradient_path, exist_ok=True)
+
     def train(self):
         self.start_time = time.time()
         self.next_obs, _ = self.envs.reset(seed=self.config['seed'])
@@ -174,12 +189,16 @@ class Trainer:
             self._save_trajectories(advantages)
             trajectory_save_time = time.time() - trajectory_save_start_time
 
+            gradient_save_start_time = time.time()
+            self._save_gradients(returns, advantages)
+            gradient_save_time = time.time() - gradient_save_start_time
+
             optim_start_time = time.time()
             self._update_policy(returns, advantages)
             optim_time = time.time() - optim_start_time
 
             update_time = time.time() - update_start_time
-            self._log_update_timings(rollout_time, advantages_time, trajectory_save_time, optim_time, update_time)
+            self._log_update_timings(rollout_time, advantages_time, trajectory_save_time, optim_time, update_time, gradient_save_time=gradient_save_time)
 
             self.update += 1
         
@@ -225,6 +244,68 @@ class Trainer:
                 advantages[t] = lastgaelam = delta + self.config['gamma'] * self.config['gae_lambda'] * nextnonterminal * lastgaelam
             returns = advantages + self.values
         return returns, advantages
+
+    def _save_gradients(self, returns, advantages):
+        if not self.config.get('save_gradients', False):
+            return
+
+        print("Computing and saving gradients per environment...")
+        num_envs = self.config['num_envs']
+
+        temp_grad_path = f"{self.gradient_path}/update_{self.update}_tmp"
+        os.makedirs(temp_grad_path, exist_ok=True)
+
+        memmapped_grads = {}
+        for name, p in self.agent.named_parameters():
+            if p.requires_grad:
+                sanitized_name = name.replace('/', '_')
+                filepath = os.path.join(temp_grad_path, f"{sanitized_name}.npy")
+                shape = (num_envs,) + p.shape
+                memmapped_grads[name] = np.memmap(filepath, dtype=np.float32, mode='w+', shape=shape)
+
+        for i in range(num_envs):
+            self.agent.zero_grad()
+            
+            # Get data for this environment
+            obs_i = self.obs[:, i]
+            actions_i = self.actions[:, i]
+            logprobs_i = self.logprobs[:, i]
+            advantages_i = advantages[:, i]
+            returns_i = returns[:, i]
+            
+            # Calculate loss for this environment
+            _, newlogprob, entropy, newvalue = self.agent.get_action_and_value(obs_i, actions_i.long())
+            logratio = newlogprob - logprobs_i
+            ratio = logratio.exp()
+
+            pg_loss1 = -advantages_i * ratio
+            pg_loss2 = -advantages_i * torch.clamp(ratio, 1 - self.config['clip_coef'], 1 + self.config['clip_coef'])
+            pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+
+            newvalue = newvalue.view(-1)
+            v_loss = 0.5 * ((newvalue - returns_i) ** 2).mean()
+
+            entropy_loss = entropy.mean()
+            loss = pg_loss - self.config['ent_coef'] * entropy_loss + v_loss * self.config['vf_coef']
+
+            loss.backward()
+
+            for name, param in self.agent.named_parameters():
+                if name in memmapped_grads and param.grad is not None:
+                    memmapped_grads[name][i] = param.grad.cpu().numpy()
+        
+        self.agent.zero_grad() # Clean up gradients after calculation
+
+        for mmap_array in memmapped_grads.values():
+            mmap_array.flush()
+
+        numpy_grads = {name: np.array(grad_array, dtype=np.float16) for name, grad_array in memmapped_grads.items()}
+        
+        save_path = f"{self.gradient_path}/update_{self.update}_grads.npz"
+        np.savez_compressed(file=save_path, **numpy_grads)  # type: ignore
+        print(f"Saved gradients to {save_path}")
+
+        shutil.rmtree(temp_grad_path)
 
     def _save_trajectories(self, advantages):
         if self.config.get('save_trajectories', False):
@@ -377,13 +458,15 @@ class Trainer:
                 "global_step": self.global_step
             })
             
-    def _log_update_timings(self, rollout_time, advantages_time, trajectory_save_time, optim_time, update_time):
+    def _log_update_timings(self, rollout_time, advantages_time, trajectory_save_time, optim_time, update_time, gradient_save_time=None):
         if self.update % 10 == 0:
             print(f"Update {self.update} timings:")
             print(f"  Rollout: {rollout_time:.4f}s")
             print(f"  Advantage Calculation: {advantages_time:.4f}s")
             if self.config.get('save_trajectories', False):
                 print(f"  Trajectory Saving: {trajectory_save_time:.4f}s")
+            if self.config.get('save_gradients', False) and gradient_save_time is not None:
+                print(f"  Gradient Saving: {gradient_save_time:.4f}s")
             print(f"  Optimization: {optim_time:.4f}s")
             print(f"  Total Update: {update_time:.4f}s")
             print(f"  SPS: {int(self.global_step / (time.time() - self.start_time))}")

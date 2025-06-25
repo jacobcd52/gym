@@ -9,8 +9,9 @@ cuda: true                               # Whether to use GPU acceleration
 max_episode_steps: 1000                 # Maximum steps per episode (truncates long episodes)
 trajectory_save_every_n_frames: 4 # Save every Nth frame
 save_trajectories: true                 # Whether to save episode trajectories
-save_every_n_updates: 4 # Save trajectories every N updates
+save_every_n_updates: 1 # Save trajectories every N updates
 n_envs_to_save: 12 # Number of parallel environments to save trajectories for
+save_gradients: true # Whether to save gradients
 
 # agent.py
 learning_rate: 3.0e-4             # Learning rate for the Adam optimizer
@@ -24,7 +25,11 @@ vf_coef: 0.5                             # Value function loss coefficient
 max_grad_norm: 0.5                       # Maximum gradient norm for gradient clipping
 target_kl: null                          # Target KL divergence (null = no early stopping)
 optimizer_eps: 1.0e-5                    # Epsilon parameter for Adam optimizer
-hidden_sizes: [512]                   # List of hidden layer sizes for MLP (will override hidden_size if specified)
+hidden_sizes: [256]                   # List of hidden layer sizes for MLP (will override hidden_size if specified)
+cnn_layers:
+  - { out_channels: 16, kernel_size: 8, stride: 4 }
+  - { out_channels: 32, kernel_size: 4, stride: 2 }
+  - { out_channels: 32, kernel_size: 4, stride: 2 }
 layer_init_std: 1.4142135623730951       # Standard deviation for layer weight initialization (sqrt(2))
 actor_std: 0.01                          # Standard deviation for actor head initialization
 critic_std: 1                            # Standard deviation for critic head initialization

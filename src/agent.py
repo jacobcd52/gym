@@ -41,47 +41,62 @@ class Agent(nn.Module):
             # Store the number of channels for later use
             self.in_channels = channels
             
-            # Calculate appropriate kernel sizes based on image dimensions
-            # Use smaller kernels for larger images
-            print(f"Checking dimensions: height={height}, width={width}")
-            if height >= 200 and width >= 150:  # Large images like Pacman
-                kernel1, stride1 = 4, 2
-                kernel2, stride2 = 3, 2
-                kernel3, stride3 = 2, 1
-                print("Using large image kernels")
-            elif height >= 100 and width >= 80:  # Medium images
-                kernel1, stride1 = 6, 3
-                kernel2, stride2 = 4, 2
-                kernel3, stride3 = 3, 1
-                print("Using medium image kernels")
-            else:  # Small images (like 84x84)
-                kernel1, stride1 = 8, 4
-                kernel2, stride2 = 4, 2
-                kernel3, stride3 = 3, 1
-                print("Using small image kernels")
+            cnn_modules = []
+            if 'cnn_layers' in config:
+                print("Building CNN from configuration...")
+                in_ch = channels
+                for layer_params in config['cnn_layers']:
+                    cnn_modules.append(layer_init(nn.Conv2d(
+                        in_channels=in_ch,
+                        out_channels=layer_params['out_channels'],
+                        kernel_size=layer_params['kernel_size'],
+                        stride=layer_params['stride']
+                    ), std=config['layer_init_std']))
+                    cnn_modules.append(nn.ReLU())
+                    in_ch = layer_params['out_channels']
+            else:
+                print("Warning: 'cnn_layers' not found in config. Using default CNN architecture.")
+                # Use smaller kernels for larger images
+                print(f"Checking dimensions: height={height}, width={width}")
+                if height >= 200 and width >= 150:  # Large images like Pacman
+                    k1, s1, c1 = 4, 2, 32
+                    k2, s2, c2 = 3, 2, 64
+                    k3, s3, c3 = 2, 1, 64
+                    print("Using large image kernels")
+                elif height >= 100 and width >= 80:  # Medium images
+                    k1, s1, c1 = 6, 3, 32
+                    k2, s2, c2 = 4, 2, 64
+                    k3, s3, c3 = 3, 1, 64
+                    print("Using medium image kernels")
+                else:  # Small images (like 84x84)
+                    k1, s1, c1 = 8, 4, 32
+                    k2, s2, c2 = 4, 2, 64
+                    k3, s3, c3 = 3, 1, 64
+                    print("Using small image kernels")
+                
+                cnn_modules.extend([
+                    layer_init(nn.Conv2d(channels, c1, k1, stride=s1), std=config['layer_init_std']),
+                    nn.ReLU(),
+                    layer_init(nn.Conv2d(c1, c2, k2, stride=s2), std=config['layer_init_std']),
+                    nn.ReLU(),
+                    layer_init(nn.Conv2d(c2, c3, k3, stride=s3), std=config['layer_init_std']),
+                    nn.ReLU(),
+                ])
+
+            cnn_modules.append(nn.Flatten())
+            self.cnn = nn.Sequential(*cnn_modules)
             
-            print(f"Using kernels: {kernel1}x{kernel1}, {kernel2}x{kernel2}, {kernel3}x{kernel3}")
-            print(f"First conv layer: Conv2d({channels}, 32, {kernel1}, stride={stride1})")
-            
-            # CNN for image-based observations
-            self.cnn = nn.Sequential(
-                layer_init(nn.Conv2d(channels, 32, kernel1, stride=stride1), std=config['layer_init_std']),
-                nn.ReLU(),
-                layer_init(nn.Conv2d(32, 64, kernel2, stride=stride2), std=config['layer_init_std']),
-                nn.ReLU(),
-                layer_init(nn.Conv2d(64, 64, kernel3, stride=stride3), std=config['layer_init_std']),
-                nn.ReLU(),
-                nn.Flatten(),
-            )
-            
-            # Calculate the output size of the CNN dynamically
+            # Calculate the output size of the CNN dynamically and print activations
             with torch.no_grad():
-                # Create a dummy input to calculate the output size
                 dummy_input = torch.zeros(1, channels, height, width)
-                print(f"Dummy input shape: {dummy_input.shape}")
-                dummy_output = self.cnn(dummy_input)
-                cnn_output_size = dummy_output.shape[1]
-                print(f"CNN output size: {cnn_output_size}")
+                print(f"\nActivation shape analysis (dummy input shape: {dummy_input.shape}):")
+                x = dummy_input
+                for i, layer in enumerate(self.cnn):
+                    x = layer(x)
+                    print(f"  - After layer {i} ({layer.__class__.__name__}): {x.shape}")
+                
+                cnn_output_size = x.shape[1]
+                print(f"CNN output size: {cnn_output_size}\n")
             
             # MLP for the part after CNN
             hidden_sizes = config['hidden_sizes']
