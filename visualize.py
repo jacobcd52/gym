@@ -17,17 +17,22 @@ def visualize_trajectory(trajectory_path):
         st.session_state.playback_speed = "1x"
     if 'current_trajectory' not in st.session_state:
         st.session_state.current_trajectory = None
+    if 'selected_env' not in st.session_state:
+        st.session_state.selected_env = 0
 
     # Reset frame index if trajectory changes
     if st.session_state.current_trajectory != trajectory_path:
         st.session_state.current_trajectory = trajectory_path
         st.session_state.frame_idx = 0
         st.session_state.playing = False
+        st.session_state.selected_env = 0
 
     try:
         data = np.load(trajectory_path)
+        # States shape: (T, N, C, H, W), Advantages shape: (T, N)
         states = data['states']
         advantages = data['advantages']
+        num_saved_envs = states.shape[1]
     except FileNotFoundError:
         st.error(f"Trajectory file not found at: {trajectory_path}")
         return
@@ -37,15 +42,18 @@ def visualize_trajectory(trajectory_path):
 
     st.title("Trajectory Visualization")
 
-    # Initialize session state for play functionality
-    if 'playing' not in st.session_state:
-        st.session_state.playing = False
-    if 'frame_idx' not in st.session_state:
-        st.session_state.frame_idx = 0
-    if 'playback_speed' not in st.session_state:
-        st.session_state.playback_speed = "1x"
+    # Environment selector
+    st.session_state.selected_env = st.sidebar.selectbox(
+        "Select Environment to Display", 
+        options=list(range(num_saved_envs)),
+        index=st.session_state.get('selected_env', 0)
+    )
 
-    num_frames = len(states)
+    # Isolate the data for the selected environment
+    env_states = states[:, st.session_state.selected_env]
+    env_advantages = advantages[:, st.session_state.selected_env]
+    
+    num_frames = len(env_states)
     if num_frames == 0:
         st.warning("Trajectory is empty.")
         return
@@ -69,7 +77,7 @@ def visualize_trajectory(trajectory_path):
     # Column 1: Display observation
     with col1:
         st.subheader(f"Frame {st.session_state.frame_idx}")
-        obs = states[st.session_state.frame_idx] # Shape: (C, H, W)
+        obs = env_states[st.session_state.frame_idx] # Shape: (C, H, W)
         if len(obs.shape) == 3 and obs.shape[0] == 4: # Stacked frames for Atari
             st.image(obs[-1], caption="Current Observation", use_container_width=True)
         elif len(obs.shape) == 2 or (len(obs.shape) == 3 and obs.shape[2] in [1, 3]): # Grayscale or RGB
@@ -82,7 +90,7 @@ def visualize_trajectory(trajectory_path):
     with col2:
         st.subheader("Advantages vs. Timestep")
         fig, ax = plt.subplots()
-        ax.plot(advantages)
+        ax.plot(env_advantages)
         ax.set_xlabel("Timestep")
         ax.set_ylabel("Advantage (GAE)")
         ax.axvline(x=st.session_state.frame_idx, color='r', linestyle='--', label=f'Current Timestep')
