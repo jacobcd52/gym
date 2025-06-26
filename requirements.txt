@@ -11,3 +11,4 @@ imageio
 moviepy
 torchinfo
 pygame
+huggingface-hub

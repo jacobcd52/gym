@@ -18,6 +18,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.cuda.amp.grad_scaler import GradScaler
 from torch.utils.tensorboard import SummaryWriter
+from huggingface_hub import HfApi, upload_file
 from .agent import Agent
 from .utils import record_episode
 
@@ -474,8 +475,12 @@ class Trainer:
 
     def cleanup(self):
         model_path = f"runs/{self.run_name}/{self.config['env_id']}.pt"
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
         torch.save(self.agent.state_dict(), model_path)
         print(f"model saved to {model_path}")
+
+        if self.config.get('upload_to_hf', False):
+            self._upload_to_huggingface(model_path)
 
         try:
             self.envs.close()
@@ -488,6 +493,38 @@ class Trainer:
         if self.config['wandb_project_name']:
             import wandb
             wandb.finish()
+
+    def _upload_to_huggingface(self, model_path):
+        repo_id = self.config.get('hf_repo_id')
+        if not repo_id:
+            print("Hugging Face repo_id not specified in config. Skipping upload.")
+            return
+
+        print(f"Uploading model to Hugging Face Hub at {repo_id}...")
+        try:
+            # Create the repo if it doesn't exist
+            api = HfApi()
+            api.create_repo(repo_id=repo_id, exist_ok=True, repo_type="model")
+
+            # Upload the model
+            upload_file(
+                path_or_fileobj=model_path,
+                path_in_repo=f"{self.config['env_id'].replace('/', '_')}_{self.run_name}.pt",
+                repo_id=repo_id,
+            )
+
+            # Upload the config file
+            config_path = "config.yaml"
+            if os.path.exists(config_path):
+                upload_file(
+                    path_or_fileobj=config_path,
+                    path_in_repo="config.yaml",
+                    repo_id=repo_id,
+                )
+
+            print(f"Successfully uploaded model and config to {repo_id}")
+        except Exception as e:
+            print(f"Error uploading to Hugging Face Hub: {e}")
 
 
 def train(config):
